@@ -51,15 +51,23 @@ path_corte = os.path.join(base_path, 'backend', 'corte0.pt')
 path_detOP = os.path.join(base_path, 'backend', 'det 2cls R2 0.pt')
 path_detOA = os.path.join(base_path, 'backend', 'OAyoloIR4AH.pt')
 
-print(f"--- Cargando modelos desde: {base_path} ---")
+# print(f"--- Cargando modelos desde: {base_path} ---")
 
-try:
-    # Cargamos los modelos al iniciar la instancia
-    # modelrecorte = YOLO(path_corte) # Descomenta si usas el recorte
+# try:
+#     # Cargamos los modelos al iniciar la instancia
+#     # modelrecorte = YOLO(path_corte) # Descomenta si usas el recorte
+#     modeldetOP = YOLO(path_detOP)
+#     modeldetOA = YOLO(path_detOA)
+# except Exception as e:
+#     print(f"Error FATAL cargando modelos: {e}")
+from functools import lru_cache
+
+@lru_cache(maxsize=1)
+def load_models():
+    print(">>> Cargando modelos YOLO (una sola vez)...")
     modeldetOP = YOLO(path_detOP)
     modeldetOA = YOLO(path_detOA)
-except Exception as e:
-    print(f"Error FATAL cargando modelos: {e}")
+    return modeldetOP, modeldetOA
 
 # ---------------------------
 # 2) Funciones de procesamiento (Tu lógica intacta)
