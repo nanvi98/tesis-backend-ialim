@@ -1,7 +1,7 @@
 fastapi
 uvicorn
-numpy
 opencv-python-headless
 ultralytics
-pydantic
 python-multipart
+pydantic
+numpy
