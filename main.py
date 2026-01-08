@@ -1,80 +1,74 @@
-import os
-import cv2
-import numpy as np
-import base64
-from functools import lru_cache
-
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
+import base64
+from io import BytesIO
+from PIL import Image
+import numpy as np
 from ultralytics import YOLO
-
+import cv2
 
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# -------- MODELOS (AJUSTA RUTAS SI ES NECESARIO) ----------
+model_crop = YOLO("backend/corte0.pt")
+model_op = YOLO("backend/det 2cls R2 0.pt")
+model_oa = YOLO("backend/OAyoloIR4AH.pt")
 
 
-BASE = os.path.dirname(__file__)
-PATH_OP = os.path.join(BASE, "backend", "det 2cls R2 0.pt")
-PATH_OA = os.path.join(BASE, "backend", "OAyoloIR4AH.pt")
-
-
-@lru_cache(maxsize=1)
-def load_models():
-    model_op = YOLO(PATH_OP)
-    model_oa = YOLO(PATH_OA)
-    return model_op, model_oa
-
-
-class ImageData(BaseModel):
+# -------- REQUEST BODY ----------
+class ImageRequest(BaseModel):
     image: str
 
 
-def decode_image(b64):
-    if "," in b64:
-        b64 = b64.split(",")[1]
+# -------- DECODIFICAR BASE64 SIN ERRORES ----------
+def decode_image(image_string):
+
+    # Si viene con "data:image/png;base64,"
+    if "," in image_string:
+        image_string = image_string.split(",")[1]
+
+    # Corregir padding faltante
+    missing_padding = len(image_string) % 4
+    if missing_padding:
+        image_string += "=" * (4 - missing_padding)
 
     try:
-        data = base64.b64decode(b64)
-        arr = np.frombuffer(data, np.uint8)
-        img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        img_bytes = base64.b64decode(image_string)
+        image = Image.open(BytesIO(img_bytes)).convert("RGB")
+        return np.array(image)
+
     except Exception:
         raise HTTPException(status_code=400, detail="Imagen corrupta")
 
-    if img is None:
-        raise HTTPException(status_code=400, detail="Imagen corrupta")
 
-    return img
-
-
+# -------- ENDPOINT PRINCIPAL ----------
 @app.post("/predict")
-async def predict(payload: ImageData):
-    img = decode_image(payload.image)
+async def predict(data: ImageRequest):
 
-    model_op, model_oa = load_models()
+    img = decode_image(data.image)
 
-    op = model_op(img)[0]
-    if len(op.boxes) == 0:
-        raise HTTPException(status_code=400, detail="No se detectó OP")
+    # Convertir a BGR para OpenCV
+    img_bgr = cv2.cvtColor(img, cv2.COLOR_RGB2BGR)
 
-    box = op.boxes[0]
-    x1, y1, x2, y2 = map(int, box.xyxy[0])
-    crop = img[y1:y2, x1:x2]
+    # ---------- TU PROCESO EJEMPLO ----------
+    # Recorte
+    crop_results = model_crop(img_bgr)
 
-    oa = model_oa(crop)[0]
+    # Osteoporosis
+    op_results = model_op(img_bgr)
 
+    # Osteoartritis
+    oa_results = model_oa(img_bgr)
+
+    # Aquí regresas lo que tú necesites.
     return {
-        "ok": True,
+        "status": "ok",
+        "crop_detections": len(crop_results[0].boxes),
+        "op_detections": len(op_results[0].boxes),
+        "oa_detections": len(oa_results[0].boxes)
     }
 
 
 @app.get("/")
-def health():
-    return {"ok": True}
+def home():
+    return {"message": "API funcionando 👍"}
