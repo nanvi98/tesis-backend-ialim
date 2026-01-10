@@ -5,53 +5,37 @@ import base64
 import cv2
 import numpy as np
 from ultralytics import YOLO
-import os
 
-# --------------------------------------------------
-# 🚀 APP
-# --------------------------------------------------
+# -------------------------------------------------
+# APP
+# -------------------------------------------------
 app = FastAPI()
 
-# --------------------------------------------------
-# 🌐 CORS (OBLIGATORIO)
-# --------------------------------------------------
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5000",
-        "http://127.0.0.1:5000",
-        "https://tesis-app.web.app",
-        "https://tesis-app.firebaseapp.com",
-        "*"
-    ],
+    allow_origins=["*"],  # frontend Firebase / local
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# --------------------------------------------------
-# 🧠 CARGA DE MODELOS YOLO
-# --------------------------------------------------
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-BACKEND_DIR = os.path.join(BASE_DIR, "backend")
+# -------------------------------------------------
+# MODELOS YOLO
+# -------------------------------------------------
+# ⚠️ Rutas relativas al repo
+model_recorte = YOLO("backend/corte0.pt")
+model_op = YOLO("backend/det 2cls R2 0.pt")
+model_oa = YOLO("backend/OAyoloIR4AH.pt")
 
-try:
-    model_recorte = YOLO(os.path.join(BACKEND_DIR, "corte0.pt"))
-    model_op = YOLO(os.path.join(BACKEND_DIR, "det 2cls R2 0.pt"))
-    model_oa = YOLO(os.path.join(BACKEND_DIR, "OAyoloIR4AH.pt"))
-except Exception as e:
-    print("❌ ERROR cargando modelos:", e)
-    raise e
-
-# --------------------------------------------------
-# 📦 SCHEMA
-# --------------------------------------------------
+# -------------------------------------------------
+# REQUEST
+# -------------------------------------------------
 class PredictRequest(BaseModel):
-    image: str  # Base64 completo: data:image/png;base64,...
+    image: str  # base64 data:image/...
 
-# --------------------------------------------------
-# 🧪 UTILIDADES
-# --------------------------------------------------
+# -------------------------------------------------
+# UTILS
+# -------------------------------------------------
 def decode_base64_image(data: str) -> np.ndarray:
     try:
         if "," in data:
@@ -68,21 +52,24 @@ def decode_base64_image(data: str) -> np.ndarray:
     except Exception:
         raise HTTPException(status_code=400, detail="Imagen corrupta o inválida")
 
+
 def encode_image(img: np.ndarray) -> str:
     _, buffer = cv2.imencode(".jpg", img)
-    return "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
+    img_base64 = base64.b64encode(buffer).decode("utf-8")
+    return f"data:image/jpeg;base64,{img_base64}"
 
-# --------------------------------------------------
-# 🔬 ENDPOINT PRINCIPAL
-# --------------------------------------------------
+# -------------------------------------------------
+# ENDPOINT
+# -------------------------------------------------
 @app.post("/predict")
 def predict(req: PredictRequest):
 
-    # 1️⃣ Decodificar imagen
+    # 1️⃣ Decodificar imagen original
     img = decode_base64_image(req.image)
 
-    # 2️⃣ RECORTE (si aplica)
+    # 2️⃣ RECORTE DE RODILLA
     recorte_result = model_recorte(img)[0]
+
     if len(recorte_result.boxes) > 0:
         box = recorte_result.boxes[0].xyxy[0].cpu().numpy().astype(int)
         x1, y1, x2, y2 = box
@@ -90,31 +77,36 @@ def predict(req: PredictRequest):
     else:
         img_crop = img.copy()
 
-    # 3️⃣ DETECCIÓN OSTEOPOROSIS
+    imagen_procesada = encode_image(img_crop)
+
+    # 3️⃣ MODELOS OP y OA SOBRE RECORTE
     res_op = model_op(img_crop)[0]
+    res_oa = model_oa(img_crop)[0]
+
     clase_op = "normal"
     prob_op = 0.0
-
     if len(res_op.boxes) > 0:
-        box = res_op.boxes[0]
-        prob_op = float(box.conf[0])
         clase_op = "osteoporosis"
+        prob_op = float(res_op.boxes[0].conf[0])
 
-    # 4️⃣ DETECCIÓN OSTEOARTRITIS
-    res_oa = model_oa(img_crop)[0]
     clase_oa = "normal"
     prob_oa = 0.0
+    if len(res_oa.boxes) > 0:
+        clase_oa = "osteoartritis"
+        prob_oa = float(res_oa.boxes[0].conf[0])
+
+    # 4️⃣ IMAGEN ETIQUETADA (CAJAS YOLO)
+    img_etiquetada = img_crop.copy()
+
+    if len(res_op.boxes) > 0:
+        img_etiquetada = res_op.plot(img=img_etiquetada)
 
     if len(res_oa.boxes) > 0:
-        box = res_oa.boxes[0]
-        prob_oa = float(box.conf[0])
-        clase_oa = "osteoartritis"
+        img_etiquetada = res_oa.plot(img=img_etiquetada)
 
-    # 5️⃣ Imágenes de salida
-    img_procesada = encode_image(img_crop)
-    img_etiquetada = encode_image(img_crop)  # aquí puedes dibujar cajas si quieres
+    imagen_etiquetada = encode_image(img_etiquetada)
 
-    # 6️⃣ RESPUESTA
+    # 5️⃣ RESPUESTA
     return {
         "resultado": {
             "clase_op": clase_op,
@@ -122,13 +114,13 @@ def predict(req: PredictRequest):
             "clase_oa": clase_oa,
             "prob_oa": round(prob_oa, 3),
         },
-        "imagenProcesada": img_procesada,
-        "imagenEtiquetada": img_etiquetada,
+        "imagenProcesada": imagen_procesada,
+        "imagenEtiquetada": imagen_etiquetada,
     }
 
-# --------------------------------------------------
-# 🟢 HEALTH CHECK
-# --------------------------------------------------
+# -------------------------------------------------
+# HEALTH CHECK
+# -------------------------------------------------
 @app.get("/")
 def root():
-    return {"status": "ok"}
+    return {"status": "Backend YOLO activo"}

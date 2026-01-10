@@ -1,7 +1,6 @@
 fastapi
 uvicorn
-numpy
 opencv-python-headless
-torch
+numpy
 ultralytics
-pydantic
+torch
