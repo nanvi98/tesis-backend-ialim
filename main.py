@@ -11,9 +11,9 @@ app = FastAPI()
 # MODELOS YOLO
 # -------------------------
 # Ajusta los nombres si tus .pt se llaman distinto
-model_recorte = YOLO("models/corte0.pt")
-model_op = YOLO("models/det2clsR2.pt")
-model_oa = YOLO("models/OAyoloIR4AH.pt")
+model_recorte = YOLO("backend/corte0.pt")
+model_op = YOLO("backend/det 2cls R2 0.pt")
+model_oa = YOLO("backend/OAyoloIR4AH.pt")
 
 # -------------------------
 # SCHEMA
