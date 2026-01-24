@@ -1,10 +1,9 @@
 import os
-import io
 import cv2
 import base64
 import numpy as np
 from functools import lru_cache
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from ultralytics import YOLO
 
@@ -23,7 +22,6 @@ app.add_middleware(
 
 # ---------------------------
 # RUTAS DE MODELOS
-# (modelos dentro de /backend)
 # ---------------------------
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 BACKEND_DIR = os.path.join(BASE_DIR, "backend")
@@ -33,18 +31,10 @@ PATH_OP = os.path.join(BACKEND_DIR, "3clsOPfft.pt")
 PATH_OA = os.path.join(BACKEND_DIR, "OAyoloR4cls5.pt")
 
 # ---------------------------
-# CARGA DE MODELOS (UNA SOLA VEZ)
+# CARGA DE MODELOS
 # ---------------------------
 @lru_cache(maxsize=1)
 def load_models():
-    if not os.path.exists(PATH_RECORTE):
-        raise RuntimeError(f"No existe {PATH_RECORTE}")
-    if not os.path.exists(PATH_OP):
-        raise RuntimeError(f"No existe {PATH_OP}")
-    if not os.path.exists(PATH_OA):
-        raise RuntimeError(f"No existe {PATH_OA}")
-
-    print("🚀 Cargando modelos YOLO...")
     return (
         YOLO(PATH_RECORTE),
         YOLO(PATH_OP),
@@ -54,14 +44,31 @@ def load_models():
 # ---------------------------
 # UTILIDADES
 # ---------------------------
+def decode_base64_image(b64: str):
+    if "," in b64:
+        b64 = b64.split(",")[1]
+
+    try:
+        img_bytes = base64.b64decode(b64)
+    except Exception:
+        raise ValueError("Base64 inválido")
+
+    arr = np.frombuffer(img_bytes, np.uint8)
+    img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+
+    if img is None:
+        raise ValueError("Imagen inválida")
+
+    return img
+
 def to_base64(img):
     ok, buffer = cv2.imencode(".jpg", img)
     if not ok:
-        raise ValueError("No se pudo codificar la imagen")
+        raise ValueError("No se pudo codificar imagen")
     return "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
 
 # ---------------------------
-# FUNCIONES DE MODELO
+# MODELOS
 # ---------------------------
 def yolorecorte(model, img):
     results = model(img)
@@ -84,7 +91,7 @@ def yolodetOPCrop(model, crop):
     prob = float(results[0].probs.top1conf)
     return cls, prob
 
-def yolodetOA(model, crop, certeza=0.0):
+def yolodetOA(model, crop):
     results = model(crop)
     best = None
     best_conf = -1.0
@@ -92,7 +99,7 @@ def yolodetOA(model, crop, certeza=0.0):
     for r in results:
         for box in r.boxes:
             conf = box.conf[0].item()
-            if conf > certeza and conf > best_conf:
+            if conf > best_conf:
                 best = box
                 best_conf = conf
 
@@ -102,91 +109,70 @@ def yolodetOA(model, crop, certeza=0.0):
     x1, y1, x2, y2 = map(int, best.xyxy[0])
     return int(best.cls[0]), float(best.conf[0]), x1, y1, x2, y2
 
-def etiquetar2(imagen, clOP, xOP1, yOP1, xOP2, yOP2, clOA, xOA1, yOA1, xOA2, yOA2):
-    # OP
-    cv2.rectangle(imagen, (xOP1, yOP1), (xOP2, yOP2), (255, 0, 0), 2)
-    etiquetas_op = ["Sin osteoporosis", "Osteopenia", "Osteoporosis"]
-    cv2.putText(
-        imagen,
-        etiquetas_op[clOP],
-        (xOP1, max(30, yOP1 - 10)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 255, 0),
-        2
-    )
+def etiquetar(img, clOP, c, clOA, oa_box):
+    x1, y1, x2, y2 = c
+    cv2.rectangle(img, (x1, y1), (x2, y2), (255, 0, 0), 2)
 
-    # OA
-    cv2.rectangle(
-        imagen,
-        (xOP1 + xOA1, yOP1 + yOA1),
-        (xOP1 + xOA2, yOP1 + yOA2),
-        (0, 0, 255),
-        2
-    )
-    etiquetas_oa = [
-        "Sin OA",
-        "OA dudoso",
-        "OA leve",
-        "OA moderado",
-        "OA grave",
-    ]
-    cv2.putText(
-        imagen,
-        etiquetas_oa[clOA],
-        (xOP1 + xOA1, max(30, yOP1 + yOA1 - 10)),
-        cv2.FONT_HERSHEY_SIMPLEX,
-        1,
-        (0, 255, 0),
-        2
-    )
+    etiquetas_op = ["Normal", "Osteopenia", "Osteoporosis"]
+    cv2.putText(img, etiquetas_op[clOP], (x1, y1 - 10),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
 
-    return imagen
+    if oa_box:
+        cl, _, ox1, oy1, ox2, oy2 = oa_box
+        cv2.rectangle(
+            img,
+            (x1 + ox1, y1 + oy1),
+            (x1 + ox2, y1 + oy2),
+            (0, 0, 255),
+            2
+        )
+
+    return img
 
 def CorrerModelo(img):
     modelrecorte, modelOP, modelOA = load_models()
-    certeza = 0.0
 
     coor = yolorecorte(modelrecorte, img)
     if not coor:
         raise HTTPException(status_code=400, detail="No se detectó rodilla")
 
-    # Resultados por defecto
-    clase_op = "desconocido"
+    clase_op = "normal"
     prob_op = 0.0
     clase_oa = "normal"
     prob_oa = 0.0
 
     for c in coor:
         crop = img[c[1]:c[3], c[0]:c[2]]
-
-        # OP
         clOP, probOP = yolodetOPCrop(modelOP, crop)
+        oa = yolodetOA(modelOA, crop)
+
         clase_op = ["normal", "osteopenia", "osteoporosis"][clOP]
         prob_op = probOP
 
-        # OA
-        oa = yolodetOA(modelOA, crop, certeza)
         if oa:
-            clOA, probOA, x1, y1, x2, y2 = oa
+            clOA, probOA, *_ = oa
             clase_oa = ["normal", "dudoso", "leve", "moderado", "grave"][clOA]
             prob_oa = probOA
-            img = etiquetar2(img, clOP, c[0], c[1], c[2], c[3], clOA, x1, y1, x2, y2)
+            img = etiquetar(img, clOP, c, clOA, oa)
 
     return img, clase_op, prob_op, clase_oa, prob_oa
 
 # ---------------------------
-# API
+# API (IGUAL AL BACKEND VIEJO)
 # ---------------------------
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
-    contents = await file.read()
-    img = cv2.imdecode(np.frombuffer(contents, np.uint8), cv2.IMREAD_COLOR)
+async def predict(req: Request):
+    data = await req.json()
 
-    if img is None:
-        raise HTTPException(status_code=400, detail="Imagen inválida")
+    if "image" not in data:
+        raise HTTPException(status_code=400, detail="No se recibió imagen")
 
-    img_result, clase_op, prob_op, clase_oa, prob_oa = CorrerModelo(img)
+    try:
+        img = decode_base64_image(data["image"])
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    img_res, clase_op, prob_op, clase_oa, prob_oa = CorrerModelo(img)
 
     return {
         "resultado": {
@@ -196,7 +182,7 @@ async def predict(file: UploadFile = File(...)):
             "prob_oa": prob_oa,
         },
         "imagenProcesada": to_base64(img),
-        "imagenEtiquetada": to_base64(img_result),
+        "imagenEtiquetada": to_base64(img_res),
     }
 
 @app.get("/")
