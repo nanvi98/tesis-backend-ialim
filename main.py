@@ -143,13 +143,17 @@ async def predict(file: UploadFile = File(...)):
 
     # Convertir a bytes JPG
     _, img_encoded = cv2.imencode(".jpg", result_img)
-    img_base64 = base64.b64encode(img_encoded).decode("utf-8")
+    #img_base64 = base64.b64encode(img_encoded).decode("utf-8")
 
-    return JSONResponse({
-        "imagen_procesada": f"data:image/jpeg;base64,{img_base64}",
-        "imagen_etiquetada": f"data:image/jpeg;base64,{img_base64}"
-    })
+    #return JSONResponse({
+     #   "imagen_procesada": f"data:image/jpeg;base64,{img_base64}",
+      #  "imagen_etiquetada": f"data:image/jpeg;base64,{img_base64}"
+   # })
    # return StreamingResponse(io.BytesIO(img_encoded.tobytes()), media_type="image/jpeg")
+    return StreamingResponse(
+        io.BytesIO(img_encoded.tobytes()),
+        media_type="image/jpeg"
+    )
 
 app.add_middleware(
     CORSMiddleware,
