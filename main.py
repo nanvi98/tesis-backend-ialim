@@ -166,6 +166,7 @@ async def predict(file: UploadFile = File(...)):
         return "data:image/jpeg;base64," + base64.b64encode(buffer).decode()
 
     return {
+        "mensaje":"Ánalisis completo",
         "imagenProcesada": to_base64(procesada),
         "imagenEtiquetada": to_base64(etiquetada)
     }
